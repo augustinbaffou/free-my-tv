@@ -25,6 +25,7 @@ import android.graphics.drawable.Drawable;
 import android.media.tv.TvContract;
 import android.media.tv.TvInputInfo;
 import android.media.tv.TvInputManager;
+import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
@@ -150,6 +151,13 @@ final class HomeApps {
     /** Live TV apps of some brands (the antenna's channels open through the standard Android request first). */
     static final String[] LIVE_TV_APPS = {"com.tcl.tv", "com.google.android.tv", "com.mediatek.wwtv.tvcenter", "com.sony.dtv.tvx",
             "com.smartdevice.livetv", "com.mediatek.tv.oneworld.tvcenter", "com.amazon.tv.livetv", "com.amazon.mediatek.livetv"};
+    /**
+     * Streaming apps with live channels that Live TV can open instead of the TV's tuner (Home Settings > Live TV): package,
+     * name, and the address that opens its live page. CANAL+ (France): its web link opens the app on "TV en direct".
+     */
+    static final String[][] LIVE_STREAMS = {
+        {"com.canal.android.canal", "CANAL+", "https://www.canalplus.com/live/"},
+    };
     /** Kept out of "All Apps" (only hidden, still installed). Add the ones your TV shows that you never use. */
     private static final Set<String> HIDDEN = new HashSet<>(java.util.Arrays.asList(
             "com.google.android.play.games",        // Google Play Games
@@ -720,6 +728,13 @@ final class HomeApps {
      */
     static Intent liveTv(Context c) {
         PackageManager pm = c.getPackageManager();
+        // An app picked in Home Settings > Live TV button; uninstalled since, the TV's own tuner again.
+        String picked = Prefs.liveApp();
+        for (String[] s : LIVE_STREAMS) {
+            if (!s[0].equals(picked)) continue;
+            Intent live = liveStream(pm, s);
+            if (live != null) return live;
+        }
         // Fire TV: the antenna (digital terrestrial) entry of Amazon's Live TV, which plays the antenna's channels or
         // opens the channel scan when there are none yet. The channels request would also offer Vewd's HbbTV player,
         // and Live TV on its own plays the last channel, which can be an app's (RaiPlay's).
@@ -754,6 +769,20 @@ final class HomeApps {
             if (app != null) return app;
         }
         return null;
+    }
+
+    /** A LIVE_STREAMS row's live page, or null where its app isn't on the TV or doesn't take the address. */
+    private static Intent liveStream(PackageManager pm, String[] s) {
+        if (launchIntent(pm, s[0]) == null) return null;
+        Intent live = new Intent(Intent.ACTION_VIEW, Uri.parse(s[2])).setPackage(s[0]);
+        return live.resolveActivity(pm) != null ? live : null;
+    }
+
+    /** The LIVE_STREAMS apps on this TV, as {package, name}, for Home Settings. */
+    static List<String[]> liveStreams(Context c) {
+        List<String[]> out = new ArrayList<>();
+        for (String[] s : LIVE_STREAMS) if (liveStream(c.getPackageManager(), s) != null) out.add(new String[] {s[0], s[1]});
+        return out;
     }
 
     /**

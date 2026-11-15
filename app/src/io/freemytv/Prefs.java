@@ -356,6 +356,11 @@ final class Prefs {
 
     static void setPowerOn(String v) { put("powerOn", v); }
 
+    /** What Live TV opens (Home Settings > Live TV): "" for the TV's own tuner, or a package of HomeApps.LIVE_STREAMS. */
+    static String liveApp() { return sp().getString("liveApp", ""); }
+
+    static void setLiveApp(String pkg) { put("liveApp", pkg); }
+
     // MARK: - Widgets and coins
 
     static boolean weather() { return sp().getBoolean("weather", true); }

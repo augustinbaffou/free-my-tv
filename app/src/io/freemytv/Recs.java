@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -110,6 +111,8 @@ final class Recs {
         {"crunchyroll", "crunchyroll", "com.crunchyroll.crunchyroid"},
         {"now tv", "now", "com.bskyb.nowtv.beta"},     // UK: Sky's NOW (TMDB: "Now TV", "Now TV Cinema")
         {"oneplay", "oneplay", "net.cme.voyo.cz.tvapp"},    // Czechia: Voyo and O2 TV became Oneplay, same app
+        // France: TMDB's "Canal+" and "Canal+ Séries" (OCS and Ciné+ joined Canal+); not "Canal VOD", which rents
+        {"canal+", "canal", "com.canal.android.canal"},
         // Germany (TMDB's watch providers for DE)
         {"ard mediathek", "ard", "de.swr.avp.ard.tv"},
         {"zdf", "zdf", "com.zdf.android.mediathek"},
@@ -156,6 +159,7 @@ final class Recs {
         SERVICE_NAME.put("crunchyroll", "Crunchyroll");
         SERVICE_NAME.put("now", "NOW");
         SERVICE_NAME.put("oneplay", "Oneplay");
+        SERVICE_NAME.put("canal", "CANAL+");
         SERVICE_NAME.put("ard", "ARD Mediathek");
         SERVICE_NAME.put("zdf", "ZDF");
         SERVICE_NAME.put("arte", "ARTE");
@@ -216,6 +220,7 @@ final class Recs {
         context = c;
         cache = c.getSharedPreferences("recs", Context.MODE_PRIVATE);
         byName = readByName(c);
+        viaNames = readRows(c, "recs-via");
         if (cache.getInt("version", 0) != CACHE_VERSION) cache.edit().clear().putInt("version", CACHE_VERSION).apply();
         try {
             String saved = cache.getString("picks", null);
@@ -409,10 +414,23 @@ final class Recs {
         return (cut > 0 ? t.substring(0, cut) : t).trim();
     }
 
-    /** Name of the service the pick is on ("Netflix"), or empty. */
+    /** Name of the app the pick opens in ("Netflix"; "CANAL+" for a service watched through it), or empty. */
     static String serviceName(Pick p) {
-        return p == null || p.app == null ? "" : name(p.app);
+        if (p == null || p.app == null) return "";
+        if (p.app.startsWith(VIA)) for (String[] b : BUNDLES) if (b[1].equals(p.pkg)) return b[2];
+        return name(p.app);
     }
+
+    /**
+     * Apps whose own catalogue carries other services (CANAL+ in France: Apple TV, HBO Max, Paramount+...), as {key,
+     * package, name}. A TMDB service switched on under the first one on the TV in Picks from ("via.<provider id>", off
+     * until then) brings its titles in: they open in that app, and their line names the service.
+     */
+    private static final String[][] BUNDLES = {{"canal", "com.canal.android.canal", "CANAL+"}};
+    private static final String VIA = "via.";
+
+    /** The services Picks from offers under a BUNDLES app, as {provider id, TMDB name}, from the last list (recs-via.json). */
+    private static volatile List<String[]> viaNames = new ArrayList<>();
 
     /**
      * Services SERVICES doesn't know, found by name: a TMDB service in REGION named like a TV app ("Oldflix"). As SERVICES
@@ -432,7 +450,33 @@ final class Recs {
         String known = SERVICE_NAME.get(key);
         if (known != null) return known;
         for (String[] s : byName) if (s[1].equals(key)) return s[3];
+        for (String[] s : viaNames) if (key.equals(VIA + s[0])) return s[1];
         return "";
+    }
+
+    /** The first BUNDLES app on the TV, or null. */
+    private static String[] bundle(Context c) {
+        for (String[] b : BUNDLES) if (HomeApps.launchIntent(c.getPackageManager(), b[1]) != null) return b;
+        return null;
+    }
+
+    /** A service switched on to be watched in the bundle app, as a SERVICES row {plain name, "via.<id>", its package}; else null. */
+    private String[] via(String name, int providerId) {
+        if (Prefs.serviceOff(VIA + providerId)) return null;
+        String[] b = bundle(context);
+        return b == null ? null : new String[] {plain(name), VIA + providerId, b[1]};
+    }
+
+    /** A TMDB name Picks from can offer under the bundle app: not a channel sold in another app, a store, rentals or a plan with ads. */
+    private static boolean offerable(String name) {
+        String n = name.toLowerCase(Locale.ROOT);
+        return !(n.contains(" channel") || n.contains("store") || n.contains("vod") || n.endsWith(" with ads"));
+    }
+
+    /** TMDB's order for the region's services (the most watched first). */
+    private static int priority(JSONObject provider) {
+        JSONObject p = provider.optJSONObject("display_priorities");
+        return p == null ? Integer.MAX_VALUE : p.optInt(REGION, Integer.MAX_VALUE);
     }
 
     /** "Oldflix" and "OLDFLIX", "Claro video" and "Claro Vídeo": compared without case, accents or punctuation, in any script. */
@@ -442,12 +486,19 @@ final class Recs {
     }
 
     private static List<String[]> readByName(Context c) {
+        return readRows(c, "recs-services");
+    }
+
+    /** Rows of strings saved by writeRows ("recs-services": byName; "recs-via": viaNames). */
+    private static List<String[]> readRows(Context c, String name) {
         List<String[]> out = new ArrayList<>();
-        try (FileInputStream in = new FileInputStream(new File(c.getFilesDir(), "recs-services.json"))) {
+        try (FileInputStream in = new FileInputStream(new File(c.getFilesDir(), name + ".json"))) {
             JSONArray a = new JSONArray(read(in));
             for (int i = 0; i < a.length(); i++) {
                 JSONArray s = a.getJSONArray(i);
-                out.add(new String[] {s.getString(0), s.getString(1), s.getString(2), s.getString(3)});
+                String[] row = new String[s.length()];
+                for (int j = 0; j < row.length; j++) row[j] = s.getString(j);
+                out.add(row);
             }
         } catch (Exception ignored) {   // none found yet
         }
@@ -455,10 +506,10 @@ final class Recs {
     }
 
     /** Through a temporary file per process (the screensaver has its own Recs on Android 11 to 12L): the settings read it. */
-    private void writeByName(List<String[]> found) {
+    private void writeRows(String name, List<String[]> rows) {
         JSONArray a = new JSONArray();
-        for (String[] s : found) a.put(new JSONArray(Arrays.asList(s)));
-        File tmp = new File(context.getFilesDir(), "recs-services." + android.os.Process.myPid() + ".tmp");
+        for (String[] s : rows) a.put(new JSONArray(Arrays.asList(s)));
+        File tmp = new File(context.getFilesDir(), name + "." + android.os.Process.myPid() + ".tmp");
         try (FileOutputStream out = new FileOutputStream(tmp)) {
             out.write(a.toString().getBytes(StandardCharsets.UTF_8));
             out.getFD().sync();
@@ -468,7 +519,7 @@ final class Recs {
             return;
         }
         //noinspection ResultOfMethodCallIgnored
-        tmp.renameTo(new File(context.getFilesDir(), "recs-services.json"));
+        tmp.renameTo(new File(context.getFilesDir(), name + ".json"));
     }
 
     /**
@@ -546,8 +597,10 @@ final class Recs {
         long sinceFail = now - failedAt;    // negative = the clock went back: don't wait
         if (!newKey && !newTrakt && failedAt != 0 && sinceFail >= 0 && sinceFail < 10 * 60_000L) return;
         int p = period(now);
+        // A bundle app (CANAL+) whose services Picks from has never listed: they're only read with the list.
+        boolean noOffers = bundle(context) != null && !new File(context.getFilesDir(), "recs-via.json").exists();
         boolean stale = newKey || p != period || now - listAt > LIST_EVERY || now < listAt || picks.isEmpty()
-                || !listLanguage.equals(Ui.language);
+                || !listLanguage.equals(Ui.language) || noOffers;
         boolean missing = false;
         for (Pick pick : wanted()) missing |= !pick.detailed || !hasImage(pick) || needsLink(pick);
         boolean checkTrakt = !stale && !newTrakt && Trakt.signedIn(context) && (now - traktCheckedAt > TRAKT_EVERY || now < traktCheckedAt);
@@ -720,10 +773,22 @@ final class Recs {
             if (!label.isEmpty() && !NOT_BY_NAME.contains(label) && !knownPkgs.contains(app[0])) apps.put(label, app);
         }
         List<String[]> found = new ArrayList<>();
+        // What Picks from offers under the bundle app (CANAL+): the region's services, without the app's own.
+        List<JSONObject> offered = new ArrayList<>();
         for (int i = 0; i < providers.length(); i++) {
             JSONObject o = providers.getJSONObject(i);
             String name = o.optString("provider_name");
-            String[] s = service(name, o.optInt("provider_id"));
+            String[] own = service(name, o.optInt("provider_id"));
+            boolean bundled = false;
+            for (String[] b : BUNDLES) bundled |= own != null && own[1].equals(b[0]);
+            if (offerable(name) && !bundled) offered.add(o);
+            // Switched on under the bundle app: its titles open there, even where the service has its own app.
+            String[] v = via(name, o.optInt("provider_id"));
+            if (v != null) {
+                services.put(o.getInt("provider_id"), v);
+                continue;
+            }
+            String[] s = own;
             if (s == null || !SERVICE_NAME.containsKey(s[1])) {
                 String[] app = apps.get(plain(name));
                 // A name that only rents or buys waits until it has titles.
@@ -734,7 +799,12 @@ final class Recs {
             if (s != null && installed(s[2]) && !Prefs.serviceOff(s[1])) services.put(o.getInt("provider_id"), s);
         }
         byName = found;
-        writeByName(found);
+        writeRows("recs-services", found);
+        Collections.sort(offered, (a, b) -> Integer.compare(priority(a), priority(b)));
+        List<String[]> offers = new ArrayList<>();
+        for (JSONObject o : offered) offers.add(new String[] {String.valueOf(o.getInt("provider_id")), o.optString("provider_name")});
+        viaNames = offers;
+        writeRows("recs-via", offers);
         if (services.isEmpty()) throw new IOException(any ? NO_APPS : NO_KNOWN_APPS);
         // Signed in to Trakt: what they're in the middle of comes first, then their watchlist and Trakt's
         // recommendations; what they've watched stays out. Trakt failing leaves the picks as they'd be without it.
@@ -1002,8 +1072,11 @@ final class Recs {
         for (String type : new String[] {"flatrate", "ads", "free"}) {
             JSONArray list = br == null ? null : br.optJSONArray(type);
             for (int i = 0; list != null && i < list.length() && p.app == null; i++) {
-                String[] s = service(list.getJSONObject(i).optString("provider_name"), list.getJSONObject(i).optInt("provider_id"));
-                if (s != null && installed(s[2])) {
+                String name = list.getJSONObject(i).optString("provider_name");
+                int id = list.getJSONObject(i).optInt("provider_id");
+                String[] s = via(name, id);
+                if (s == null) s = service(name, id);
+                if (s != null && (s[1].startsWith(VIA) || installed(s[2]))) {
                     p.app = s[1];
                     p.pkg = s[2];
                 }
@@ -1101,7 +1174,7 @@ final class Recs {
         return first;
     }
 
-    /** The streaming services whose app is on this TV, as {key, name}, for Home Settings (Picks from). */
+    /** The streaming services whose app is on this TV, then those its bundle app carries, as {key, name}, for Home Settings (Picks from). */
     static List<String[]> installedServices(Context c) {
         List<String[]> out = new ArrayList<>();
         Set<String> seen = new HashSet<>();
@@ -1111,6 +1184,9 @@ final class Recs {
         for (String[] s : readByName(c)) {
             if (HomeApps.launchIntent(c.getPackageManager(), s[2]) != null && seen.add(s[1])) out.add(new String[] {s[1], s[3]});
         }
+        // Then what can be watched in the bundle app, off until switched on: "HBO Max via CANAL+".
+        String[] b = bundle(c);
+        if (b != null) for (String[] v : readRows(c, "recs-via")) out.add(new String[] {VIA + v[0], Ui.trf("{service} via {app}", "service", v[1], "app", b[2])});
         return out;
     }
 
@@ -1149,6 +1225,9 @@ final class Recs {
         // Switched on, one found by name counts; off, finding it changes nothing, so nothing is fetched again (a 0 would:
         // it still multiplies the stamp by 31).
         for (String[] service : byName) if (installed(service[2])) stamp = stamp * 31L + service[2].hashCode();
+        // A service switched on under the bundle app, and the app itself.
+        String[] bundle = bundle(context);
+        if (bundle != null) for (String[] v : viaNames) if (!Prefs.serviceOff(VIA + v[0])) stamp = stamp * 31L + (bundle[1] + v[0]).hashCode();
         return stamp;
     }
 
