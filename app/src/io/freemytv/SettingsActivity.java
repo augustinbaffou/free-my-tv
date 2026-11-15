@@ -359,7 +359,9 @@ public class SettingsActivity extends Activity {
                 case PICK_FROM: {
                     int at = pickScroll + row;
                     if (at >= services.size()) return "";
-                    return services.get(at)[1] + ", " + onOff(!Prefs.serviceOff(services.get(at)[0])) + ", " + Ui.trf("{i} of {n}", "i", at + 1, "n", services.size());
+                    String key = services.get(at)[0];
+                    return services.get(at)[1] + (key.equals(Recs.MORE_SERVICES) ? "" : ", " + onOff(!Prefs.serviceOff(key)))
+                            + ", " + Ui.trf("{i} of {n}", "i", at + 1, "n", services.size());
                 }
                 case WATCH_APPS: {
                     int at = pickScroll + row;
@@ -2335,6 +2337,11 @@ public class SettingsActivity extends Activity {
             int at = pickScroll + focus;
             if (at >= services.size()) return;
             String key = services.get(at)[0];
+            if (key.equals(Recs.MORE_SERVICES)) {   // the focus stays on the row: the first of the others
+                services.clear();
+                services.addAll(Recs.installedServices(getContext(), true));
+                return;
+            }
             Prefs.setServiceOff(key, !Prefs.serviceOff(key));
         }
 
@@ -2352,7 +2359,8 @@ public class SettingsActivity extends Activity {
                 float base = rowRect.centerY() + Ui.halfCap(rowLabel);
                 String[] service = services.get(pickScroll + i);   // the list scrolls past 9 services, like the pickers
                 c.drawText(service[1], rowRect.left + 30 * k, base, rowLabel);
-                c.drawText(onOff(!Prefs.serviceOff(service[0])), rowRect.right - 30 * k, base, rowValue);
+                String value = service[0].equals(Recs.MORE_SERVICES) ? "›" : onOff(!Prefs.serviceOff(service[0]));
+                c.drawText(value, rowRect.right - 30 * k, base, rowValue);
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
             float hy = (LIST_TOP + 20 + rows * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;

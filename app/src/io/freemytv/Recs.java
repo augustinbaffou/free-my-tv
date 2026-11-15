@@ -427,7 +427,17 @@ final class Recs {
      * until then) brings its titles in: they open in that app, and their line names the service.
      */
     private static final String[][] BUNDLES = {{"canal", "com.canal.android.canal", "CANAL+"}};
+    /**
+     * What each BUNDLES app's subscriptions include, as {TMDB provider id, name}: Picks from lists these first, the
+     * region's other services behind "Other services…". TMDB has Ciné+ OCS only as an Amazon channel (685), with the
+     * same catalogue; Paramount+ Premium (2303) has Paramount+'s.
+     */
+    private static final String[][][] PARTNERS = {
+        {{"350", "Apple TV"}, {"1899", "HBO Max"}, {"531", "Paramount+"}, {"685", "Ciné+ OCS"}, {"1754", "TF1+"}, {"147", "M6+"}},
+    };
     private static final String VIA = "via.";
+    /** Picks from's last row while it shows only the partners: OK lists every service. */
+    static final String MORE_SERVICES = "more";
 
     /** The services Picks from offers under a BUNDLES app, as {provider id, TMDB name}, from the last list (recs-via.json). */
     private static volatile List<String[]> viaNames = new ArrayList<>();
@@ -450,8 +460,15 @@ final class Recs {
         String known = SERVICE_NAME.get(key);
         if (known != null) return known;
         for (String[] s : byName) if (s[1].equals(key)) return s[3];
+        for (String[][] partners : PARTNERS) for (String[] s : partners) if (key.equals(VIA + s[0])) return s[1];
         for (String[] s : viaNames) if (key.equals(VIA + s[0])) return s[1];
         return "";
+    }
+
+    /** The partners of a BUNDLES row. */
+    private static String[][] partners(String[] bundle) {
+        for (int i = 0; i < BUNDLES.length; i++) if (BUNDLES[i] == bundle) return PARTNERS[i];
+        return new String[0][];
     }
 
     /** The first BUNDLES app on the TV, or null. */
@@ -467,10 +484,16 @@ final class Recs {
         return b == null ? null : new String[] {plain(name), VIA + providerId, b[1]};
     }
 
-    /** A TMDB name Picks from can offer under the bundle app: not a channel sold in another app, a store, rentals or a plan with ads. */
+    /**
+     * A TMDB name Picks from can offer under the bundle app: not a channel sold in another app, a store, rentals, a
+     * plan with ads, nor JustWatch's own lists, YouTube or Plex (NOT_BY_NAME).
+     */
     private static boolean offerable(String name) {
-        String n = name.toLowerCase(Locale.ROOT);
-        return !(n.contains(" channel") || n.contains("store") || n.contains("vod") || n.endsWith(" with ads"));
+        String n = name.toLowerCase(Locale.ROOT), p = plain(name);
+        if (n.contains(" channel") || n.contains("store") || n.contains("vod") || n.endsWith(" with ads")
+                || p.startsWith("justwatch") || p.equals("amazon video")) return false;
+        for (String not : NOT_BY_NAME) if (p.startsWith(not)) return false;
+        return true;
     }
 
     /** TMDB's order for the region's services (the most watched first). */
@@ -1174,8 +1197,16 @@ final class Recs {
         return first;
     }
 
-    /** The streaming services whose app is on this TV, then those its bundle app carries, as {key, name}, for Home Settings (Picks from). */
+    /** installedServices with the bundle app's partners only (and the services switched on), then MORE_SERVICES. */
     static List<String[]> installedServices(Context c) {
+        return installedServices(c, false);
+    }
+
+    /**
+     * The streaming services whose app is on this TV, then those its bundle app carries (the partners first; `all`: every
+     * one, else only those switched on and a last MORE_SERVICES row), as {key, name}, for Home Settings (Picks from).
+     */
+    static List<String[]> installedServices(Context c, boolean all) {
         List<String[]> out = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (String[] s : SERVICES) {
@@ -1186,7 +1217,19 @@ final class Recs {
         }
         // Then what can be watched in the bundle app, off until switched on: "HBO Max via CANAL+".
         String[] b = bundle(c);
-        if (b != null) for (String[] v : readRows(c, "recs-via")) out.add(new String[] {VIA + v[0], Ui.trf("{service} via {app}", "service", v[1], "app", b[2])});
+        if (b == null) return out;
+        Set<String> listed = new HashSet<>();
+        for (String[] p : partners(b)) {
+            listed.add(p[0]);
+            out.add(new String[] {VIA + p[0], Ui.trf("{service} via {app}", "service", p[1], "app", b[2])});
+        }
+        boolean more = false;
+        for (String[] v : readRows(c, "recs-via")) {
+            if (!listed.add(v[0])) continue;
+            if (all || !Prefs.serviceOff(VIA + v[0])) out.add(new String[] {VIA + v[0], Ui.trf("{service} via {app}", "service", v[1], "app", b[2])});
+            else more = true;
+        }
+        if (more) out.add(new String[] {MORE_SERVICES, Ui.tr("Other services…")});
         return out;
     }
 
